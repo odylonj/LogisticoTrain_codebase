@@ -1,0 +1,328 @@
+name: logisticotrain
+
+services:
+  sqldatabase:
+    image: mariadb:11.4
+    entrypoint:
+      - /bin/sh
+      - /opt/bootstrap/run-sqldatabase.sh
+    environment:
+      SQL_DATABASE: myrames-prod-db
+    secrets:
+      - sql_root_password
+      - sql_app_user
+      - sql_app_password
+    volumes:
+      - sqldatabase_data:/var/lib/mysql
+      - ./deployment/mariadb/init:/docker-entrypoint-initdb.d:ro
+      - ./deployment/mariadb/run-sqldatabase.sh:/opt/bootstrap/run-sqldatabase.sh:ro
+    networks:
+      - sql_net
+    restart: unless-stopped
+    healthcheck:
+      test:
+        - CMD-SHELL
+        - >
+          mariadb-admin ping -h 127.0.0.1
+          --user="$$(cat /run/secrets/sql_app_user)"
+          --password="$$(cat /run/secrets/sql_app_password)"
+          --silent
+      interval: 10s
+      timeout: 10s
+      retries: 10
+      start_period: 10s
+    security_opt:
+      - no-new-privileges:true
+
+  nosqldatabase:
+    image: mongo:7.0
+    entrypoint:
+      - /bin/sh
+      - /opt/bootstrap/run-nosqldatabase.sh
+    environment:
+      MONGO_APP_DATABASE: history-db
+    secrets:
+      - mongo_root_user
+      - mongo_root_password
+      - mongo_app_user
+      - mongo_app_password
+    volumes:
+      - nosqldatabase_data:/data/db
+      - ./deployment/mongodb/init:/docker-entrypoint-initdb.d:ro
+      - ./deployment/mongodb/run-nosqldatabase.sh:/opt/bootstrap/run-nosqldatabase.sh:ro
+    networks:
+      - mongo_net
+    restart: unless-stopped
+    healthcheck:
+      test:
+        - CMD-SHELL
+        - >
+          mongosh --quiet --authenticationDatabase admin
+          --username "$$(cat /run/secrets/mongo_root_user)"
+          --password "$$(cat /run/secrets/mongo_root_password)"
+          --eval "db.adminCommand({ ping: 1 }).ok"
+          | grep 1 >/dev/null
+      interval: 10s
+      timeout: 10s
+      retries: 10
+      start_period: 10s
+    security_opt:
+      - no-new-privileges:true
+
+  broker:
+    image: rabbitmq:3.13-management-alpine
+    hostname: broker
+    entrypoint:
+      - /bin/sh
+      - /opt/bootstrap/run-broker.sh
+    secrets:
+      - broker_user
+      - broker_password
+    volumes:
+      - broker_data:/var/lib/rabbitmq
+      - ./deployment/rabbitmq/enabled_plugins:/etc/rabbitmq/enabled_plugins:ro
+      - ./deployment/rabbitmq/run-broker.sh:/opt/bootstrap/run-broker.sh:ro
+    networks:
+      - broker_net
+    restart: unless-stopped
+    healthcheck:
+      test:
+        - CMD
+        - rabbitmq-diagnostics
+        - -q
+        - ping
+      interval: 10s
+      timeout: 10s
+      retries: 10
+      start_period: 10s
+    security_opt:
+      - no-new-privileges:true
+
+  restapi:
+    build:
+      context: .
+      dockerfile: deployment/restapi/Dockerfile
+    secrets:
+      - sql_app_user
+      - sql_app_password
+      - mongo_app_user
+      - mongo_app_password
+    environment:
+      RESTAPI_HOST: 0.0.0.0
+      RESTAPI_PORT: 5001
+      SQL_DATABASE: myrames-prod-db
+      SQL_HOST: sqldatabase
+      SQL_PORT: 3306
+      MONGO_DATABASE: history-db
+      MONGO_HOST: nosqldatabase
+      MONGO_PORT: 27017
+      MONGO_AUTH_DB: admin
+    depends_on:
+      sqldatabase:
+        condition: service_healthy
+      nosqldatabase:
+        condition: service_healthy
+    networks:
+      - edge_net
+      - sql_net
+      - mongo_net
+    restart: unless-stopped
+    read_only: true
+    tmpfs:
+      - /tmp
+    security_opt:
+      - no-new-privileges:true
+
+  wsapi:
+    image: maven:3.9.9-eclipse-temurin-21
+    working_dir: /workspace/RealtimeAPI
+    entrypoint:
+      - /bin/sh
+      - /opt/bootstrap/run-wsapi.sh
+    environment:
+      SERVER_PORT: 8080
+      SQL_DATABASE: myrames-prod-db
+      SQL_HOST: sqldatabase
+      SQL_PORT: 3306
+      MONGO_DATABASE: history-db
+      MONGO_HOST: nosqldatabase
+      MONGO_PORT: 27017
+      MONGO_AUTH_DB: admin
+      BROKER_HOST: broker
+      BROKER_PORT: 61613
+    depends_on:
+      sqldatabase:
+        condition: service_healthy
+      nosqldatabase:
+        condition: service_healthy
+      broker:
+        condition: service_healthy
+    secrets:
+      - sql_app_user
+      - sql_app_password
+      - mongo_app_user
+      - mongo_app_password
+      - broker_user
+      - broker_password
+    volumes:
+      - ./RealtimeAPI:/workspace/RealtimeAPI:ro
+      - wsapi_target:/workspace/RealtimeAPI/target
+      - wsapi_maven_repo:/root/.m2
+      - ./deployment/wsapi/run-wsapi.sh:/opt/bootstrap/run-wsapi.sh:ro
+    networks:
+      - edge_net
+      - sql_net
+      - mongo_net
+      - broker_net
+    restart: unless-stopped
+    security_opt:
+      - no-new-privileges:true
+
+  front:
+    image: nginx:1.27-alpine
+    depends_on:
+      restapi:
+        condition: service_started
+      wsapi:
+        condition: service_started
+    volumes:
+      - webapp_build:/usr/share/nginx/html:ro
+      - ./deployment/nginx/nginx.conf:/etc/nginx/nginx.conf:ro
+    ports:
+      - 80:80
+    networks:
+      - edge_net
+    restart: unless-stopped
+    read_only: true
+    tmpfs:
+      - /var/cache/nginx
+      - /var/run
+    healthcheck:
+      test:
+        - CMD-SHELL
+        - wget -q -O- http://127.0.0.1/health >/dev/null 2>&1
+      interval: 10s
+      timeout: 10s
+      retries: 10
+      start_period: 10s
+    security_opt:
+      - no-new-privileges:true
+
+  webapp:
+    image: node:22-bookworm
+    profiles:
+      - builder
+    working_dir: /workspace/app
+    command:
+      - /bin/sh
+      - /opt/bootstrap/run-webapp.sh
+    network_mode: bridge
+    environment:
+      PUBLIC_PATH: /
+      API_BASE_URL: /api/v1
+      RT_API_BASE_URL: /wsapi
+      API_EP_URI: /api/v1
+      RT_API_EP_URI: /wsapi
+    volumes:
+      - ./app:/workspace/app:ro
+      - webapp_node_modules:/workspace/app/node_modules
+      - webapp_build:/workspace/app/build
+      - webapp_build_infos:/workspace/app/buildInfos
+      - webapp_npm_cache:/root/.npm
+      - ./deployment/webapp/run-webapp.sh:/opt/bootstrap/run-webapp.sh:ro
+    restart: "no"
+    security_opt:
+      - no-new-privileges:true
+
+  phpmyadmin:
+    image: phpmyadmin:5.2-apache
+    profiles:
+      - dev-tool
+    environment:
+      PMA_HOST: sqldatabase
+      PMA_PORT: 3306
+      PMA_USER_FILE: /run/secrets/sql_app_user
+      PMA_PASSWORD_FILE: /run/secrets/sql_app_password
+    secrets:
+      - sql_app_user
+      - sql_app_password
+    ports:
+      - 127.0.0.1:8081:80
+    depends_on:
+      sqldatabase:
+        condition: service_started
+    networks:
+      - sql_net
+    restart: unless-stopped
+    security_opt:
+      - no-new-privileges:true
+
+  mongo-express:
+    image: mongo-express:1.0.2-20-alpine3.19
+    profiles:
+      - dev-tool
+    entrypoint:
+      - /bin/sh
+      - /opt/bootstrap/run-mongo-express.sh
+    environment:
+      ME_CONFIG_MONGODB_ENABLE_ADMIN: "true"
+      ME_CONFIG_SITE_BASEURL: /
+    secrets:
+      - mongo_root_user
+      - mongo_root_password
+    ports:
+      - 127.0.0.1:8082:8081
+    depends_on:
+      nosqldatabase:
+        condition: service_started
+    volumes:
+      - ./deployment/devtools/run-mongo-express.sh:/opt/bootstrap/run-mongo-express.sh:ro
+    networks:
+      - mongo_net
+    restart: unless-stopped
+    security_opt:
+      - no-new-privileges:true
+
+networks:
+  edge_net:
+    driver: bridge
+  sql_net:
+    driver: bridge
+    internal: true
+  mongo_net:
+    driver: bridge
+    internal: true
+  broker_net:
+    driver: bridge
+    internal: true
+
+volumes:
+  sqldatabase_data:
+  nosqldatabase_data:
+  broker_data:
+  wsapi_maven_repo:
+  wsapi_target:
+  webapp_node_modules:
+  webapp_build:
+  webapp_build_infos:
+  webapp_npm_cache:
+
+secrets:
+  sql_root_password:
+    file: ./deployment/secrets/sql_root_password.txt
+  sql_app_user:
+    file: ./deployment/secrets/sql_app_user.txt
+  sql_app_password:
+    file: ./deployment/secrets/sql_app_password.txt
+  mongo_root_user:
+    file: ./deployment/secrets/mongo_root_user.txt
+  mongo_root_password:
+    file: ./deployment/secrets/mongo_root_password.txt
+  mongo_app_user:
+    file: ./deployment/secrets/mongo_app_user.txt
+  mongo_app_password:
+    file: ./deployment/secrets/mongo_app_password.txt
+  broker_user:
+    file: ./deployment/secrets/broker_user.txt
+  broker_password:
+    file: ./deployment/secrets/broker_password.txt
