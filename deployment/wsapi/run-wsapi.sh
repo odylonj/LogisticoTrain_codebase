@@ -21,8 +21,8 @@ spring.datasource.username=$(cat /run/secrets/sql_app_user)
 spring.datasource.password=$(cat /run/secrets/sql_app_password)
 spring.datasource.url=jdbc:mariadb://${SQL_HOST:-sqldatabase}:${SQL_PORT:-3306}/${SQL_DATABASE:-myrames-prod-db}
 spring.datasource.driver-class-name=org.mariadb.jdbc.Driver
-spring.jpa.database-platform=org.hibernate.dialect.MariaDBDialect
 spring.jpa.hibernate.ddl-auto=validate
+spring.jpa.open-in-view=false
 
 spring.data.mongodb.database=${MONGO_DATABASE:-history-db}
 spring.data.mongodb.auto-index-creation=true
@@ -38,7 +38,4 @@ app.broker.login=$(cat /run/secrets/broker_user)
 app.broker.password=$(cat /run/secrets/broker_password)
 EOF
 
-exec mvn \
-  -Dmaven.repo.local=/root/.m2/repository \
-  -Dspring-boot.run.arguments=--spring.config.location="$CONFIG_PATH" \
-  spring-boot:run
+exec java -jar /opt/logisticotrain/wsapi/app.jar --spring.config.location="$CONFIG_PATH"

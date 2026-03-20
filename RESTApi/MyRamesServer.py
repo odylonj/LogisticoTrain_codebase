@@ -7,6 +7,7 @@ from werkzeug.middleware.proxy_fix import ProxyFix
 
 from controllers.actionsController import action_controller
 from controllers.errorHandler import error_handler
+from controllers.healthController import health_controller
 from controllers.rameController import rame_controller
 from controllers.voieController import voie_controller
 from dao.history_db import HistoryDbDAO
@@ -56,6 +57,7 @@ def create_server_apps(config_file_path: str, static_folder_path: str, log_level
 
     # REST Controllers setup
     app.register_blueprint(error_handler)
+    app.register_blueprint(health_controller)
     app.register_blueprint(voie_controller)
     app.register_blueprint(rame_controller)
     app.register_blueprint(action_controller)

@@ -27,4 +27,6 @@ MONGODB_SETTINGS = {
 }
 EOF
 
-exec python -u MyRamesServer.py -c "$CONFIG_PATH" -l "${RESTAPI_LOG_LEVEL:-INFO}"
+export RESTAPI_CONFIG_PATH="$CONFIG_PATH"
+
+exec python -u /usr/local/bin/serve_restapi.py

@@ -80,5 +80,7 @@ $RECYCLE.BIN/
 # Custom rules
 
 local/
+.vscode/
+.tmp*
 
 # End of custom rules
