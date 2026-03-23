@@ -38,4 +38,6 @@ app.broker.login=$(cat /run/secrets/broker_user)
 app.broker.password=$(cat /run/secrets/broker_password)
 EOF
 
-exec java -jar /opt/logisticotrain/wsapi/app.jar --spring.config.location="$CONFIG_PATH"
+exec mvn -B -DskipTests spring-boot:run \
+  -Dspring-boot.run.jvmArguments="-Dspring.devtools.add-properties=false -Dspring.devtools.restart.enabled=false -Dspring.devtools.livereload.enabled=false -Dio.netty.native.workdir=/var/tmp/netty -Djansi.tmpdir=/var/tmp/netty" \
+  -Dspring-boot.run.arguments="--spring.config.location=${CONFIG_PATH}"
